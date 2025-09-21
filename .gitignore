@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.log
+logs/
+descargas/
+contenido_firefox_*.html
+respuesta_403.html
+
