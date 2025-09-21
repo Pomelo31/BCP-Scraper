@@ -1,15 +1,16 @@
 # Dependencias para el Bot de Web Scraping del Banco Central del Paraguay
 
-# Librería principal para hacer requests HTTP
+# Libreria principal para hacer requests HTTP
 requests>=2.31.0
 
 # Parser HTML para web scraping
 beautifulsoup4>=4.12.0
 
-# Parser XML alternativo (más rápido que el parser por defecto)
+# Parser XML alternativo (mas rapido que el parser por defecto)
 lxml>=4.9.0
+lxml-html-clean>=0.1.0
 
-# Para manejo de archivos Excel (opcional, para validación)
+# Para manejo de archivos Excel (opcional, para validacion)
 openpyxl>=3.1.0
 
 # Para manejo de fechas y timestamps
@@ -18,15 +19,15 @@ python-dateutil>=2.8.0
 # Para logging mejorado (opcional)
 colorlog>=6.7.0
 
-# Para manejo de configuración (opcional)
+# Para manejo de configuracion (opcional)
 configparser>=5.3.0
 
-# Para validación de URLs
+# Para validacion de URLs
 validators>=0.20.0
 
 # Para manejo de JavaScript y navegador real
 requests-html>=0.10.0
 cloudscraper>=1.2.71
 
-# Para simulación de navegador más avanzada
+# Para simulacion de navegador mas avanzada
 selenium>=4.15.0

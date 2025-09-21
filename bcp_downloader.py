@@ -13,7 +13,10 @@ import logging
 import re
 from urllib.parse import urljoin, urlparse
 from datetime import datetime
+from openpyxl import load_workbook
 import json
+import csv
+import unicodedata
 
 # Importar requests-html si está disponible
 try:
@@ -21,7 +24,7 @@ try:
     REQUESTS_HTML_AVAILABLE = True
 except ImportError:
     REQUESTS_HTML_AVAILABLE = False
-    print("⚠️ requests-html no está disponible. Instálalo con: pip install requests-html")
+    print("WARNING: requests-html no esta disponible. Instalala con: pip install requests-html")
 
 # Intentar importar cloudscraper si esta disponible
 try:
@@ -129,6 +132,78 @@ class BCPDownloader:
             pass
         self._init_session(prefer_cloudscraper=prefer_cloudscraper)
     
+
+    def _get_download_basename(self, category):
+        mapping = {
+            'tabla_bancos': 'tabla_de_bancos',
+            'tabla_financieras': 'tabla_de_financieras'
+        }
+        return mapping.get(category, category)
+
+    def _get_category_suffix(self, category):
+        suffix_map = {
+            'tabla_bancos': 'BI',
+            'tabla_financieras': 'FI'
+        }
+        return suffix_map.get(category, 'XX')
+
+    def _normalize_text(self, value):
+        if not value:
+            return ''
+        normalized = unicodedata.normalize('NFKD', value)
+        ascii_text = normalized.encode('ascii', 'ignore').decode()
+        ascii_text = re.sub(r'[^a-z0-9]+', ' ', ascii_text.lower())
+        return ascii_text.strip()
+
+    def extract_sheets_to_csv(self, filepath, category):
+        """Extrae hojas especificas del Excel y las guarda como CSV"""
+        sheet_targets = [
+            {'label': 'EEFF', 'prefix': 'ER', 'keywords': ['eeff']},
+            {'label': 'TC', 'prefix': 'TC', 'keywords': ['tc']},
+            {'label': 'Credito Sector', 'prefix': 'CS', 'keywords': ['cred', 'sector']}
+        ]
+
+        suffix = self._get_category_suffix(category)
+        output_dir = os.path.dirname(filepath)
+
+        try:
+            workbook = load_workbook(filepath, read_only=True, data_only=True)
+        except Exception as exc:
+            logger.error(f"Error al abrir {filepath} para extraer CSV: {exc}")
+            return
+
+        normalized_titles = []
+        for worksheet in workbook.worksheets:
+            normalized_titles.append((worksheet, self._normalize_text(worksheet.title)))
+
+        try:
+            for target in sheet_targets:
+                target_sheet = None
+                for worksheet, normalized in normalized_titles:
+                    if all(keyword in normalized for keyword in target['keywords']):
+                        target_sheet = worksheet
+                        break
+
+                if not target_sheet:
+                    logger.warning(f"No se encontro una hoja relacionada con '{target['label']}' en {os.path.basename(filepath)}")
+                    continue
+
+                output_filename = f"{target['prefix']}{suffix}.csv"
+                output_path = os.path.join(output_dir, output_filename)
+
+                try:
+                    with open(output_path, 'w', newline='', encoding='utf-8') as csv_file:
+                        writer = csv.writer(csv_file)
+                        for row in target_sheet.iter_rows(values_only=True):
+                            writer.writerow(['' if value is None else value for value in row])
+                    logger.info(f"CSV generado: {output_path}")
+                except Exception as exc:
+                    logger.error(f"Error al escribir CSV '{output_filename}': {exc}")
+        finally:
+            try:
+                workbook.close()
+            except Exception:
+                pass
 
     def establish_session(self, retries=3):
         """Establece una sesion valida visitando primero la pagina principal"""
@@ -264,76 +339,87 @@ class BCPDownloader:
         return None
     
     def find_excel_links(self, soup):
-        """Busca enlaces a archivos Excel basándose en la estructura específica del BCP"""
+        """Busca enlaces a archivos Excel basandose en la estructura especifica del BCP"""
         excel_links = []
-        
-        logger.info("Buscando secciones específicas: 'Tabla de Bancos' y 'Tabla de Financieras'")
-        
-        # Estrategia principal: Buscar secciones por título y encontrar botones de descarga
-        sections_found = []
-        
-        # Buscar todos los elementos que puedan ser títulos de sección
-        possible_headers = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'span'], string=re.compile(r'tabla de (bancos|financieras)', re.I))
-        
+        seen_urls = set()
+
+        def add_link(data):
+            url = data.get('url')
+            if not url or url in seen_urls:
+                return
+            seen_urls.add(url)
+            excel_links.append(data)
+
+        logger.info("Buscando secciones especificas usando la estructura de la lista de documentos")
+        section_items = soup.select("div.list_item.section-item")
+        for item in section_items:
+            title_el = item.select_one(".item_title")
+            link_el = item.select_one("div.item_links a[href]")
+            if not link_el:
+                continue
+
+            href = link_el.get('href', '')
+            if '.xls' not in href.lower():
+                continue
+
+            title_text = title_el.get_text(strip=True) if title_el else ''
+            link_text = title_text or link_el.get_text(strip=True) or 'descargar'
+            file_type = self._determine_file_type_from_link(link_text, href)
+
+            add_link({
+                'url': urljoin(self.base_url, href),
+                'text': link_text,
+                'type': file_type,
+                'method': 'structured_section'
+            })
+
+        logger.info("Buscando secciones especificas: 'Tabla de Bancos' y 'Tabla de Financieras'")
+        possible_headers = soup.find_all(
+            ['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'div', 'span'],
+            string=re.compile(r'tabla de (bancos|financieras)', re.I)
+        )
+
         for header in possible_headers:
             header_text = header.get_text().strip().lower()
             logger.info(f"Encontrado header: '{header_text}'")
-            
-            # Determinar el tipo de archivo basado en el texto del header
+
             file_type = None
             if 'tabla de bancos' in header_text:
                 file_type = 'tabla_bancos'
             elif 'tabla de financieras' in header_text:
                 file_type = 'tabla_financieras'
-            
+
             if file_type:
-                logger.info(f"Procesando sección: {file_type}")
-                
-                # Buscar el botón de descarga en la misma sección o contenedor padre
+                logger.info(f"Procesando seccion: {file_type}")
                 download_link = self._find_download_button_near_header(header, file_type)
                 if download_link:
-                    excel_links.append(download_link)
-                    sections_found.append(file_type)
-        
-        # Estrategia alternativa: Buscar botones de descarga y verificar contexto
-        if len(sections_found) < 2:
-            logger.info("Búsqueda alternativa: buscando todos los botones de descarga")
+                    add_link(download_link)
+
+        if len(excel_links) < 2:
+            logger.info("Busqueda alternativa: buscando todos los botones de descarga")
             all_download_buttons = soup.find_all('a', string=re.compile(r'descargar', re.I))
-            
+
             for button in all_download_buttons:
-                # Buscar el contexto del botón (título de sección cercano)
                 context_link = self._analyze_download_button_context(button)
                 if context_link:
-                    excel_links.append(context_link)
-        
-        # Estrategia de respaldo: Buscar enlaces directos a archivos Excel
-        if not excel_links:
-            logger.info("Búsqueda de respaldo: enlaces directos a Excel")
+                    add_link(context_link)
+
+        if len(excel_links) < 2:
+            logger.info("Busqueda de respaldo: enlaces directos a Excel")
             direct_links = soup.find_all('a', href=re.compile(r'\.(xlsx|xls)', re.I))
             for link in direct_links:
                 href = link.get('href', '')
                 text = link.get_text().strip()
-                
-                # Determinar tipo basado en el texto del enlace o URL
                 file_type = self._determine_file_type_from_link(text, href)
-                
-                excel_links.append({
+                add_link({
                     'url': urljoin(self.base_url, href),
                     'text': text,
                     'type': file_type,
                     'method': 'direct_link'
                 })
-        
-        # Eliminar duplicados
-        unique_links = []
-        seen_urls = set()
-        for link in excel_links:
-            if link['url'] not in seen_urls:
-                unique_links.append(link)
-                seen_urls.add(link['url'])
-        
-        logger.info(f"Total de enlaces únicos encontrados: {len(unique_links)}")
-        return unique_links
+
+        logger.info(f"Total de enlaces unicos encontrados: {len(excel_links)}")
+        return excel_links
     
     def _find_download_button_near_header(self, header, file_type):
         """Encuentra el botón de descarga cerca de un header específico"""
@@ -404,39 +490,32 @@ class BCPDownloader:
         text_lower = link_text.lower()
         href_lower = href.lower()
         
-        if any(keyword in text_lower for keyword in ['banco', 'bancos']):
-            return 'tabla_bancos'
-        elif any(keyword in text_lower for keyword in ['financiera', 'financieras']):
-            return 'tabla_financieras'
-        elif any(keyword in href_lower for keyword in ['banco', 'bancos']):
-            return 'tabla_bancos'
-        elif any(keyword in href_lower for keyword in ['financiera', 'financieras']):
-            return 'tabla_financieras'
-        else:
-            return 'unknown'
-    
     def categorize_links(self, links):
-        """Categoriza los enlaces según los archivos objetivo"""
+        """Categoriza los enlaces segun los archivos objetivo"""
         categorized = {
             'tabla_bancos': [],
             'tabla_financieras': [],
             'otros': []
         }
-        
+
         for link in links:
-            text = link['text'].lower()
-            url = link['url'].lower()
-            
-            # Determinar categoría
-            if any(keyword in text for keyword in self.target_files['tabla_bancos']):
+            explicit_type = link.get('type')
+            if explicit_type in ('tabla_bancos', 'tabla_financieras'):
+                categorized[explicit_type].append(link)
+                continue
+
+            text = link.get('text', '').lower()
+            url = link.get('url', '').lower()
+
+            if any(keyword in text for keyword in self.target_files['tabla_bancos']) or 'banco' in url:
                 categorized['tabla_bancos'].append(link)
-            elif any(keyword in text for keyword in self.target_files['tabla_financieras']):
+            elif any(keyword in text for keyword in self.target_files['tabla_financieras']) or 'financier' in url:
                 categorized['tabla_financieras'].append(link)
             else:
                 categorized['otros'].append(link)
-        
+
         return categorized
-    
+
 
     def download_file(self, url, filename, download_dir="descargas"):
         """Descarga un archivo con manejo robusto de errores"""
@@ -549,19 +628,19 @@ class BCPDownloader:
     
     def use_fallback_urls(self):
         """Usa las URLs de ejemplo como fallback"""
-        logger.info("🔄 Usando URLs de ejemplo como fallback...")
-        
+        logger.info("[RETRY] Usando URLs de ejemplo como fallback...")
+
         downloaded_files = []
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
+
         for file_type, url in self.fallback_urls.items():
-            filename = f"{file_type}_{timestamp}"
-            logger.info(f"📥 Descargando {file_type} desde URL de ejemplo...")
-            filepath = self.download_file(url, filename)
+            base_name = self._get_download_basename(file_type)
+            logger.info(f"[DOWNLOAD] Descargando {file_type} desde URL de ejemplo...")
+            filepath = self.download_file(url, base_name)
             if filepath:
                 downloaded_files.append(filepath)
+                self.extract_sheets_to_csv(filepath, file_type)
             time.sleep(2)  # Pausa entre descargas
-        
+
         return downloaded_files
     
 
@@ -620,34 +699,33 @@ class BCPDownloader:
     def _download_target_files(self, categorized_links):
         """Descarga los archivos objetivo encontrados"""
         downloaded_files = []
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        
+
         for category, links in categorized_links.items():
             if category == 'otros' or not links:
                 continue
-            
-            # Usar el primer enlace encontrado para cada tipo
+
             link = links[0]
-            filename = f"{category}_{timestamp}"
-            
-            logger.info(f"📥 Descargando {category}...")
-            filepath = self.download_file(link['url'], filename)
+            base_name = self._get_download_basename(category)
+
+            logger.info(f"[DOWNLOAD] Descargando {category}...")
+            filepath = self.download_file(link['url'], base_name)
             if filepath:
                 downloaded_files.append(filepath)
-            
+                self.extract_sheets_to_csv(filepath, category)
+
             time.sleep(2)  # Pausa entre descargas
-        
+
         return downloaded_files
 
 def main():
-    """Función principal"""
+    """Funcion principal"""
     downloader = BCPDownloader()
     success = downloader.run()
-    
+
     if success:
-        print("\n🎉 ¡Descarga completada exitosamente!")
+        print("\nDESCARGA COMPLETA: Descarga completada exitosamente!")
     else:
-        print("\n❌ La descarga falló. Revisa los logs para más detalles.")
+        print("\nERROR: La descarga fallo. Revisa los logs para mas detalles.")
 
 if __name__ == "__main__":
     main()
