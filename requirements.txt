@@ -2,9 +2,14 @@
 
 # Libreria principal para hacer requests HTTP
 requests>=2.31.0
+pandas>=2.2.0
 
 # Parser HTML para web scraping
 beautifulsoup4>=4.12.0
+
+matplotlib>=3.8.0
+# Base de datos analitica
+duckdb>=0.10.2
 
 # Parser XML alternativo (mas rapido que el parser por defecto)
 lxml>=4.9.0
@@ -31,3 +36,6 @@ cloudscraper>=1.2.71
 
 # Para simulacion de navegador mas avanzada
 selenium>=4.15.0
+
+# Kernel para ejecutar notebooks
+ipykernel>=6.29.0

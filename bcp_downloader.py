@@ -359,7 +359,10 @@ class BCPDownloader:
                 continue
 
             href = link_el.get('href', '')
-            if '.xls' not in href.lower():
+            if not href:
+                continue
+            href_lower = href.lower()
+            if '.xls' not in href_lower or 'xlsm' in href_lower:
                 continue
 
             title_text = title_el.get_text(strip=True) if title_el else ''
@@ -406,10 +409,13 @@ class BCPDownloader:
 
         if len(excel_links) < 2:
             logger.info("Busqueda de respaldo: enlaces directos a Excel")
-            direct_links = soup.find_all('a', href=re.compile(r'\.(xlsx|xls)', re.I))
+            direct_links = soup.find_all('a', href=re.compile(r'\.xls', re.I))
             for link in direct_links:
                 href = link.get('href', '')
                 text = link.get_text().strip()
+                href_lower = href.lower()
+                if '.xls' not in href_lower or 'xlsm' in href_lower:
+                    continue
                 file_type = self._determine_file_type_from_link(text, href)
                 add_link({
                     'url': urljoin(self.base_url, href),
@@ -436,7 +442,10 @@ class BCPDownloader:
             
             for button in download_buttons:
                 href = button.get('href', '')
-                if href and ('.xlsx' in href.lower() or '.xls' in href.lower()):
+                if not href:
+                    continue
+                href_lower = href.lower()
+                if '.xls' in href_lower and 'xlsm' not in href_lower:
                     logger.info(f"Encontrado botón de descarga para {file_type}: {href}")
                     return {
                         'url': urljoin(self.base_url, href),
@@ -452,7 +461,10 @@ class BCPDownloader:
     def _analyze_download_button_context(self, button):
         """Analiza el contexto de un botón de descarga para determinar su tipo"""
         href = button.get('href', '')
-        if not href or ('.xlsx' not in href.lower() and '.xls' not in href.lower()):
+        if not href:
+            return None
+        href_lower = href.lower()
+        if '.xls' not in href_lower or 'xlsm' in href_lower:
             return None
         
         # Buscar títulos o texto cercano al botón
